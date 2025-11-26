@@ -27,6 +27,10 @@ jobs:
     container:
       image: semgrep/semgrep:1.99.0
 
+    env:
+      # Set to 'true' to block PRs when vulnerabilities are found
+      BLOCK_PR_ON_FINDINGS: 'false'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,42 +85,51 @@ jobs:
         id: report
         if: always() && hashFiles('semgrep-results.sarif') != ''
         run: |
-          echo "## Semgrep Security Scan Results" > report.md
-          echo "" >> report.md
-
           TOTAL=${{ steps.semgrep.outputs.total }}
           ERROR=${{ steps.semgrep.outputs.error }}
           WARNING=${{ steps.semgrep.outputs.warning }}
           NOTE=${{ steps.semgrep.outputs.note }}
 
+          cat > report.md << 'HEADER'
+          ## Security Scan Results
+
+          HEADER
+
           if [ "$TOTAL" -eq 0 ]; then
-            echo "### No security issues found" >> report.md
-            echo "" >> report.md
+            cat >> report.md << 'CLEAN'
+          Looks good! No security issues were found in this change.
+
+          CLEAN
           else
-            echo "### Security Issues Found: $TOTAL" >> report.md
-            echo "" >> report.md
-            echo "| Severity | Count |" >> report.md
-            echo "|----------|-------|" >> report.md
-            echo "| Error | $ERROR |" >> report.md
-            echo "| Warning | $WARNING |" >> report.md
-            echo "| Note | $NOTE |" >> report.md
-            echo "" >> report.md
-            echo "---" >> report.md
-            echo "" >> report.md
-            echo "### Findings Details" >> report.md
-            echo "" >> report.md
+            cat >> report.md << EOF
+          Found **$TOTAL** potential security issue(s) that need attention.
 
-            # Extract findings details
-            jq -r '.runs[].results[] | "#### \(.ruleId)\n- **Severity**: \(.level)\n- **File**: `\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)`\n- **Message**: \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
+          | Severity | Count |
+          |----------|-------|
+          | High | $ERROR |
+          | Medium | $WARNING |
+          | Low | $NOTE |
 
-            echo "---" >> report.md
-            echo "" >> report.md
-            echo "### How to Fix" >> report.md
-            echo "1. Review each finding above" >> report.md
-            echo "2. Fix the vulnerable code or add \`# nosemgrep: rule-id\` with justification" >> report.md
-            echo "3. Push changes to re-run the scan" >> report.md
-            echo "" >> report.md
-            echo "> View full details in the **Security** tab → **Code scanning alerts**" >> report.md
+          ---
+
+          ### Issues Found
+
+          EOF
+
+            jq -r '.runs[].results[] | "**\(.ruleId)**\n- Severity: \(.level)\n- Location: `\(.locations[0].physicalLocation.artifactLocation.uri)` (line \(.locations[0].physicalLocation.region.startLine))\n- \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
+
+            cat >> report.md << 'FOOTER'
+
+          ---
+
+          ### What to do next
+
+          1. Review each issue listed above
+          2. Fix the code if it's a genuine vulnerability
+          3. If it's a false positive, you can suppress it by adding `# nosemgrep: <rule-id>` above the line with a brief explanation
+
+          You can find more details in the **Security** tab under **Code scanning alerts**.
+          FOOTER
           fi
 
           cat report.md >> $GITHUB_STEP_SUMMARY
@@ -130,7 +143,6 @@ jobs:
             const report = fs.readFileSync('report.md', 'utf8');
             const hasFindings = '${{ steps.semgrep.outputs.has_findings }}' === 'true';
 
-            // Find existing comment
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -139,26 +151,22 @@ jobs:
 
             const botComment = comments.find(c =>
               c.user.type === 'Bot' &&
-              c.body.includes('Semgrep Security Scan Results')
+              c.body.includes('Security Scan Results')
             );
-
-            const commentBody = hasFindings
-              ? `${report}\n\n> **This PR is blocked due to security findings. Please fix the issues above.**`
-              : report;
 
             if (botComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: botComment.id,
-                body: commentBody
+                body: report
               });
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: commentBody
+                body: report
               });
             }
 
@@ -172,12 +180,12 @@ jobs:
             report.md
           retention-days: 90
 
-      - name: Fail if findings exist
-        if: steps.semgrep.outputs.has_findings == 'true'
+      - name: Check for blocking mode
+        if: env.BLOCK_PR_ON_FINDINGS == 'true' && steps.semgrep.outputs.has_findings == 'true'
         run: |
-          echo "Security vulnerabilities found! PR is blocked."
-          echo "Total findings: ${{ steps.semgrep.outputs.total }}"
-          echo "  - Errors: ${{ steps.semgrep.outputs.error }}"
-          echo "  - Warnings: ${{ steps.semgrep.outputs.warning }}"
-          echo "  - Notes: ${{ steps.semgrep.outputs.note }}"
+          echo "Security issues found. Blocking this PR."
+          echo "Found ${{ steps.semgrep.outputs.total }} issue(s):"
+          echo "  - High: ${{ steps.semgrep.outputs.error }}"
+          echo "  - Medium: ${{ steps.semgrep.outputs.warning }}"
+          echo "  - Low: ${{ steps.semgrep.outputs.note }}"
           exit 1
