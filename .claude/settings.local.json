@@ -11,7 +11,9 @@
       "Bash(gh auth:*)",
       "Bash(gh repo view:*)",
       "Bash(git remote set-url:*)",
-      "Bash(gh run list:*)"
+      "Bash(gh run list:*)",
+      "Bash(gh api:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []

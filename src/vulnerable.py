@@ -39,3 +39,9 @@ INTERNAL_API = "http://192.168.1.100:8080/api"
 
 # Vulnerability 8: Debug mode enabled
 DEBUG = True
+
+# New vulnerable code
+import os
+password = "hardcoded_secret_123"
+os.system(f"rm -rf {user_input}")
+
