@@ -6,6 +6,7 @@
 // Vulnerability 1: Hardcoded secrets
 const API_KEY = "sk_live_1234567890abcdef";
 const DB_PASSWORD = "production_password_123";
+const PASSWORD = "productionsdsdsd_password_123";
 
 // Vulnerability 2: eval usage (p/trailofbits)
 function executeCode(userInput) {
