@@ -9,6 +9,9 @@ on:
     - cron: '0 2 * * 1'
   workflow_dispatch:
 
+# Skip scans for dependabot/renovate PRs (they can't access secrets and often fail)
+# Remove this if you want to scan dependency update PRs
+
 concurrency:
   group: semgrep-${{ github.ref }}
   cancel-in-progress: true
@@ -18,6 +21,8 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Skip dependabot/renovate PRs
+    if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
 
     permissions:
       contents: read
