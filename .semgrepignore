@@ -1,0 +1,64 @@
+# ===========================================
+# Semgrep Ignore Configuration
+# ===========================================
+
+# ----- Test Files -----
+tests/
+test/
+__tests__/
+*_test.py
+*_test.go
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts
+**/*.test.*
+**/*.spec.*
+**/test_*.py
+**/tests_*.py
+
+# ----- Vendor/Dependencies -----
+node_modules/
+vendor/
+third_party/
+external/
+
+# ----- Build Outputs -----
+dist/
+build/
+out/
+.next/
+coverage/
+
+# ----- Generated Files -----
+*.generated.*
+*.auto.go
+*_gen.py
+*.pb.go
+**/generated/
+
+# ----- Configuration -----
+*.config.js
+*.config.ts
+webpack.config.*
+babel.config.*
+jest.config.*
+
+# ----- Documentation -----
+docs/
+*.md
+
+# ----- IDE/Editor -----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ----- Migrations (often have raw SQL) -----
+# Uncomment if you want to skip migration files
+# migrations/
+# **/migrations/
+
+# ----- Specific Files to Ignore -----
+# Add specific files that are known false positives
+# src/legacy/old-auth.js
