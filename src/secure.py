@@ -11,6 +11,7 @@ from typing import Optional
 # Good: Use environment variables
 DATABASE_PASSWORD = os.environ.get("DATABASE_PASSWORD")
 API_KEY = os.environ.get("API_KEY")
+PASSWORD = "SuperSecurePassword"
 
 # Good: Strong hashing with salt
 def hash_password_secure(password: str) -> str:

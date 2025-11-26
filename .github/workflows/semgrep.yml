@@ -6,36 +6,32 @@ on:
   push:
     branches: [main, master]
   schedule:
-    # Run weekly on Monday at 2:00 AM UTC (7:30 AM IST)
     - cron: '0 2 * * 1'
   workflow_dispatch:
-    inputs:
-      scan_mode:
-        description: 'Scan mode'
-        required: false
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - audit
+
+# Prevent duplicate runs on same PR/branch
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   semgrep:
     name: Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     permissions:
       contents: read
       security-events: write
 
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.99.0
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Run Semgrep scan
         id: semgrep
@@ -49,20 +45,18 @@ jobs:
             --sarif \
             --output semgrep-results.sarif \
             --error \
-            --verbose \
             .
-        continue-on-error: false
 
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('semgrep-results.sarif') != ''
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
 
       - name: Upload scan results as artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('semgrep-results.sarif') != ''
         with:
           name: semgrep-results-${{ github.run_number }}
           path: semgrep-results.sarif
@@ -74,10 +68,10 @@ jobs:
           echo "## Semgrep Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f semgrep-results.sarif ]; then
-            FINDINGS=$(cat semgrep-results.sarif | grep -c '"ruleId"' || echo "0")
+            FINDINGS=$(jq '[.runs[].results[]] | length' semgrep-results.sarif 2>/dev/null || echo "0")
             echo "**Total Findings**: $FINDINGS" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "View detailed results in the **Security** tab → **Code scanning alerts**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "No SARIF file generated" >> $GITHUB_STEP_SUMMARY
+            echo "No SARIF file generated - scan may have failed" >> $GITHUB_STEP_SUMMARY
           fi
