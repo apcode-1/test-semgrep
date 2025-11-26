@@ -2,7 +2,7 @@ name: Semgrep Security Scan
 
 on:
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master, development, staging]
   push:
     branches: [main, master]
   schedule:
@@ -25,7 +25,7 @@ jobs:
       pull-requests: write
 
     container:
-      image: semgrep/semgrep:1.99.0
+      image: semgrep/semgrep:1.144.0
 
     env:
       # Set to 'true' to block PRs when vulnerabilities are found
