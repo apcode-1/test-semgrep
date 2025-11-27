@@ -14,7 +14,9 @@
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
       "Bash(gh repo list:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git merge:*)",
+      "Bash(gh pr view:*)"
     ],
     "deny": [],
     "ask": []
