@@ -42,6 +42,18 @@ jobs:
         id: semgrep
         run: |
           set +e
+          # Run scan with JSON output for severity parsing
+          semgrep scan \
+            --config p/default \
+            --config p/security-audit \
+            --config p/trailofbits \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --json \
+            --output semgrep-results.json \
+            .
+
+          # Also generate SARIF for GitHub Security tab
           semgrep scan \
             --config p/default \
             --config p/security-audit \
@@ -50,56 +62,46 @@ jobs:
             --config p/secrets \
             --sarif \
             --output semgrep-results.sarif \
-            --json \
-            --output semgrep-results.json \
             .
 
           if [ -f semgrep-results.json ]; then
-            # Count by Semgrep's native severity levels
-            CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR" or .extra.metadata.confidence == "HIGH")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            HIGH=$(jq '[.results[] | select(.extra.severity == "WARNING" and .extra.metadata.impact == "HIGH")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            MEDIUM=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            LOW=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep-results.json 2>/dev/null || echo "0")
             TOTAL=$(jq '.results | length' semgrep-results.json 2>/dev/null || echo "0")
 
-            # If the above doesn't work, fall back to SARIF levels
-            if [ "$TOTAL" -eq 0 ] && [ -f semgrep-results.sarif ]; then
-              TOTAL=$(jq '[.runs[].results[]] | length' semgrep-results.sarif 2>/dev/null || echo "0")
-              CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
-              HIGH=$CRITICAL
-              MEDIUM=$(jq '[.runs[].results[] | select(.level == "warning")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
-              LOW=$(jq '[.runs[].results[] | select(.level == "note")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
-            fi
+            # Semgrep severity: ERROR = Critical/High, WARNING = Medium, INFO = Low
+            CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            HIGH=$CRITICAL
+            MEDIUM=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            LOW=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep-results.json 2>/dev/null || echo "0")
 
-            echo "total=$TOTAL" >> $GITHUB_OUTPUT
-            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-            echo "high=$HIGH" >> $GITHUB_OUTPUT
-            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
-            echo "low=$LOW" >> $GITHUB_OUTPUT
+            echo "DEBUG: Total=$TOTAL, Critical=$CRITICAL, High=$HIGH, Medium=$MEDIUM, Low=$LOW"
+          else
+            TOTAL=0
+            CRITICAL=0
+            HIGH=0
+            MEDIUM=0
+            LOW=0
+          fi
 
-            # Calculate high severity count (critical + high)
-            HIGH_SEVERITY_COUNT=$((CRITICAL + HIGH))
-            echo "high_severity_count=$HIGH_SEVERITY_COUNT" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low=$LOW" >> $GITHUB_OUTPUT
 
-            if [ "$TOTAL" -gt 0 ]; then
-              echo "has_findings=true" >> $GITHUB_OUTPUT
-            else
-              echo "has_findings=false" >> $GITHUB_OUTPUT
-            fi
+          # High severity = critical + high (ERROR level findings)
+          HIGH_SEVERITY_COUNT=$((CRITICAL))
+          echo "high_severity_count=$HIGH_SEVERITY_COUNT" >> $GITHUB_OUTPUT
 
-            if [ "$HIGH_SEVERITY_COUNT" -gt 0 ]; then
-              echo "has_high_severity=true" >> $GITHUB_OUTPUT
-            else
-              echo "has_high_severity=false" >> $GITHUB_OUTPUT
-            fi
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "has_findings=true" >> $GITHUB_OUTPUT
           else
             echo "has_findings=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ "$HIGH_SEVERITY_COUNT" -gt 0 ]; then
+            echo "has_high_severity=true" >> $GITHUB_OUTPUT
+          else
             echo "has_high_severity=false" >> $GITHUB_OUTPUT
-            echo "total=0" >> $GITHUB_OUTPUT
-            echo "critical=0" >> $GITHUB_OUTPUT
-            echo "high=0" >> $GITHUB_OUTPUT
-            echo "medium=0" >> $GITHUB_OUTPUT
-            echo "low=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload SARIF to GitHub Security
