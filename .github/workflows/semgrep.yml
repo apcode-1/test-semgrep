@@ -132,7 +132,6 @@ jobs:
             echo "" >> report.md
             echo "| Severity | Count |" >> report.md
             echo "|----------|-------|" >> report.md
-            echo "| Critical | $CRITICAL |" >> report.md
             echo "| High | $HIGH |" >> report.md
             echo "| Medium | $MEDIUM |" >> report.md
             echo "| Low | $LOW |" >> report.md
@@ -142,14 +141,9 @@ jobs:
             echo "### Issues Found" >> report.md
             echo "" >> report.md
 
-            # Extract findings from JSON (more reliable)
+            # Extract findings from JSON and map severity to human-readable names
             if [ -f semgrep-results.json ]; then
-              jq -r '.results[] | "**\(.check_id)**\n- **Severity**: \(.extra.severity // "UNKNOWN")\n- **File**: `\(.path):\(.start.line)`\n- **Message**: \(.extra.message)\n"' semgrep-results.json >> report.md 2>/dev/null || true
-            fi
-
-            # Fallback to SARIF if JSON extraction failed
-            if ! grep -q "**Severity**" report.md 2>/dev/null && [ -f semgrep-results.sarif ]; then
-              jq -r '.runs[].results[] | "**\(.ruleId)**\n- **Severity**: \(if .level == "error" then "HIGH" elif .level == "warning" then "MEDIUM" else "LOW" end)\n- **File**: `\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)`\n- **Message**: \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
+              jq -r '.results[] | "**\(.check_id)**\n- **Severity**: \(if .extra.severity == "ERROR" then "High" elif .extra.severity == "WARNING" then "Medium" else "Low" end)\n- **File**: `\(.path):\(.start.line)`\n- **Message**: \(.extra.message)\n"' semgrep-results.json >> report.md 2>/dev/null || true
             fi
 
             echo "" >> report.md

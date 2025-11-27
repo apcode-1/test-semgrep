@@ -59,6 +59,15 @@ docs/
 # migrations/
 # **/migrations/
 
+# ----- GitHub Workflows -----
+# Workflow files often have variable interpolation that triggers false positives
+.github/workflows/
+*.yml
+*.yaml
+
+# ----- Semgrep Config -----
+.semgrep/
+
 # ----- Specific Files to Ignore -----
 # Add specific files that are known false positives
 # src/legacy/old-auth.js
