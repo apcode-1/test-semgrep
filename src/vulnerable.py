@@ -39,3 +39,12 @@ INTERNAL_API = "http://192.168.1.100:8080/api"
 
 # Vulnerability 8: Debug mode enabled
 DEBUG = True
+
+# More high severity vulnerabilities for testing
+import subprocess
+def dangerous_command(user_input):
+    # Command injection - HIGH severity
+    subprocess.call(user_input, shell=True)
+    
+SECRET_KEY = "super_secret_api_key_12345"
+AWS_SECRET = "AKIAIOSFODNN7EXAMPLE"
