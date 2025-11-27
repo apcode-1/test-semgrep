@@ -1,0 +1,18 @@
+name: Semgrep Security Scan
+
+on:
+  pull_request:
+    branches: [main, master, development, staging]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    uses: CSPL-CARS24/centralised-repo-devops/.github/workflows/central-semgrep.yml@master
+    with:
+      block_on_findings: false  # Set to true to block PRs
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write

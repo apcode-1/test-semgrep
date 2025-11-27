@@ -9,9 +9,6 @@ on:
     - cron: '0 2 * * 1'
   workflow_dispatch:
 
-# Skip scans for dependabot/renovate PRs (they can't access secrets and often fail)
-# Remove this if you want to scan dependency update PRs
-
 concurrency:
   group: semgrep-${{ github.ref }}
   cancel-in-progress: true
@@ -21,7 +18,6 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Skip dependabot/renovate PRs
     if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
 
     permissions:
@@ -33,8 +29,8 @@ jobs:
       image: semgrep/semgrep:1.144.0
 
     env:
-      # Set to 'true' to block PRs when vulnerabilities are found
-      BLOCK_PR_ON_FINDINGS: 'false'
+      # Set to 'true' to block PRs when HIGH/CRITICAL vulnerabilities are found
+      BLOCK_ON_HIGH_SEVERITY: 'true'
 
     steps:
       - name: Checkout repository
@@ -54,29 +50,56 @@ jobs:
             --config p/secrets \
             --sarif \
             --output semgrep-results.sarif \
+            --json \
+            --output semgrep-results.json \
             .
-          EXIT_CODE=$?
-          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
 
-          if [ -f semgrep-results.sarif ]; then
-            TOTAL=$(jq '[.runs[].results[]] | length' semgrep-results.sarif)
-            ERROR=$(jq '[.runs[].results[] | select(.level == "error")] | length' semgrep-results.sarif)
-            WARNING=$(jq '[.runs[].results[] | select(.level == "warning")] | length' semgrep-results.sarif)
-            NOTE=$(jq '[.runs[].results[] | select(.level == "note")] | length' semgrep-results.sarif)
+          if [ -f semgrep-results.json ]; then
+            # Count by Semgrep's native severity levels
+            CRITICAL=$(jq '[.results[] | select(.extra.severity == "ERROR" or .extra.metadata.confidence == "HIGH")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.results[] | select(.extra.severity == "WARNING" and .extra.metadata.impact == "HIGH")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            LOW=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' semgrep-results.json 2>/dev/null || echo "0")
+            TOTAL=$(jq '.results | length' semgrep-results.json 2>/dev/null || echo "0")
+
+            # If the above doesn't work, fall back to SARIF levels
+            if [ "$TOTAL" -eq 0 ] && [ -f semgrep-results.sarif ]; then
+              TOTAL=$(jq '[.runs[].results[]] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+              CRITICAL=$(jq '[.runs[].results[] | select(.level == "error")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+              HIGH=$CRITICAL
+              MEDIUM=$(jq '[.runs[].results[] | select(.level == "warning")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+              LOW=$(jq '[.runs[].results[] | select(.level == "note")] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+            fi
 
             echo "total=$TOTAL" >> $GITHUB_OUTPUT
-            echo "error=$ERROR" >> $GITHUB_OUTPUT
-            echo "warning=$WARNING" >> $GITHUB_OUTPUT
-            echo "note=$NOTE" >> $GITHUB_OUTPUT
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+            echo "low=$LOW" >> $GITHUB_OUTPUT
+
+            # Calculate high severity count (critical + high)
+            HIGH_SEVERITY_COUNT=$((CRITICAL + HIGH))
+            echo "high_severity_count=$HIGH_SEVERITY_COUNT" >> $GITHUB_OUTPUT
 
             if [ "$TOTAL" -gt 0 ]; then
               echo "has_findings=true" >> $GITHUB_OUTPUT
             else
               echo "has_findings=false" >> $GITHUB_OUTPUT
             fi
+
+            if [ "$HIGH_SEVERITY_COUNT" -gt 0 ]; then
+              echo "has_high_severity=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_high_severity=false" >> $GITHUB_OUTPUT
+            fi
           else
             echo "has_findings=false" >> $GITHUB_OUTPUT
+            echo "has_high_severity=false" >> $GITHUB_OUTPUT
             echo "total=0" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "low=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload SARIF to GitHub Security
@@ -88,53 +111,63 @@ jobs:
 
       - name: Generate findings report
         id: report
-        if: always() && hashFiles('semgrep-results.sarif') != ''
+        if: always() && (hashFiles('semgrep-results.sarif') != '' || hashFiles('semgrep-results.json') != '')
         run: |
           TOTAL=${{ steps.semgrep.outputs.total }}
-          ERROR=${{ steps.semgrep.outputs.error }}
-          WARNING=${{ steps.semgrep.outputs.warning }}
-          NOTE=${{ steps.semgrep.outputs.note }}
+          CRITICAL=${{ steps.semgrep.outputs.critical }}
+          HIGH=${{ steps.semgrep.outputs.high }}
+          MEDIUM=${{ steps.semgrep.outputs.medium }}
+          LOW=${{ steps.semgrep.outputs.low }}
 
-          cat > report.md << 'HEADER'
-          ## Security Scan Results
-
-          HEADER
+          # Start report
+          echo "## Security Scan Results" > report.md
+          echo "" >> report.md
 
           if [ "$TOTAL" -eq 0 ]; then
-            cat >> report.md << 'CLEAN'
-          Looks good! No security issues were found in this change.
-
-          CLEAN
+            echo "All good! No security issues were found in this change." >> report.md
           else
-            cat >> report.md << EOF
-          Found **$TOTAL** potential security issue(s) that need attention.
+            echo "Found **$TOTAL** potential security issue(s) that need attention." >> report.md
+            echo "" >> report.md
+            echo "| Severity | Count |" >> report.md
+            echo "|----------|-------|" >> report.md
+            echo "| Critical | $CRITICAL |" >> report.md
+            echo "| High | $HIGH |" >> report.md
+            echo "| Medium | $MEDIUM |" >> report.md
+            echo "| Low | $LOW |" >> report.md
+            echo "" >> report.md
+            echo "---" >> report.md
+            echo "" >> report.md
+            echo "### Issues Found" >> report.md
+            echo "" >> report.md
 
-          | Severity | Count |
-          |----------|-------|
-          | High | $ERROR |
-          | Medium | $WARNING |
-          | Low | $NOTE |
+            # Extract findings from JSON (more reliable)
+            if [ -f semgrep-results.json ]; then
+              jq -r '.results[] | "**\(.check_id)**\n- **Severity**: \(.extra.severity // "UNKNOWN")\n- **File**: `\(.path):\(.start.line)`\n- **Message**: \(.extra.message)\n"' semgrep-results.json >> report.md 2>/dev/null || true
+            fi
 
-          ---
+            # Fallback to SARIF if JSON extraction failed
+            if ! grep -q "**Severity**" report.md 2>/dev/null && [ -f semgrep-results.sarif ]; then
+              jq -r '.runs[].results[] | "**\(.ruleId)**\n- **Severity**: \(if .level == "error" then "HIGH" elif .level == "warning" then "MEDIUM" else "LOW" end)\n- **File**: `\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)`\n- **Message**: \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
+            fi
 
-          ### Issues Found
+            echo "" >> report.md
+            echo "---" >> report.md
+            echo "" >> report.md
+            echo "### What to do next" >> report.md
+            echo "" >> report.md
+            echo "1. Review each issue listed above" >> report.md
+            echo "2. Fix the code if it's a genuine vulnerability" >> report.md
+            echo "3. If it's a false positive, add \`# nosemgrep: <rule-id>\` above the line" >> report.md
+            echo "" >> report.md
+            echo "Check the **Security** tab for full details." >> report.md
 
-          EOF
-
-            jq -r '.runs[].results[] | "**\(.ruleId)**\n- Severity: \(.level)\n- Location: `\(.locations[0].physicalLocation.artifactLocation.uri)` (line \(.locations[0].physicalLocation.region.startLine))\n- \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
-
-            cat >> report.md << 'FOOTER'
-
-          ---
-
-          ### What to do next
-
-          1. Review each issue listed above
-          2. Fix the code if it's a genuine vulnerability
-          3. If it's a false positive, you can suppress it by adding `# nosemgrep: <rule-id>` above the line with a brief explanation
-
-          You can find more details in the **Security** tab under **Code scanning alerts**.
-          FOOTER
+            # Add blocking notice if high severity found
+            if [ "${{ steps.semgrep.outputs.has_high_severity }}" == "true" ] && [ "${{ env.BLOCK_ON_HIGH_SEVERITY }}" == "true" ]; then
+              echo "" >> report.md
+              echo "---" >> report.md
+              echo "" >> report.md
+              echo "> **This PR is blocked due to HIGH/CRITICAL severity findings. Please fix them before merging.**" >> report.md
+            fi
           fi
 
           cat report.md >> $GITHUB_STEP_SUMMARY
@@ -146,7 +179,6 @@ jobs:
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('report.md', 'utf8');
-            const hasFindings = '${{ steps.semgrep.outputs.has_findings }}' === 'true';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -155,8 +187,7 @@ jobs:
             });
 
             const botComment = comments.find(c =>
-              c.user.type === 'Bot' &&
-              c.body.includes('Security Scan Results')
+              c.user.type === 'Bot' && c.body.includes('Security Scan Results')
             );
 
             if (botComment) {
@@ -177,20 +208,26 @@ jobs:
 
       - name: Upload scan results as artifact
         uses: actions/upload-artifact@v4
-        if: always() && hashFiles('semgrep-results.sarif') != ''
+        if: always()
         with:
           name: semgrep-results-${{ github.run_number }}
           path: |
             semgrep-results.sarif
+            semgrep-results.json
             report.md
           retention-days: 90
+          if-no-files-found: ignore
 
-      - name: Check for blocking mode
-        if: env.BLOCK_PR_ON_FINDINGS == 'true' && steps.semgrep.outputs.has_findings == 'true'
+      - name: Block on HIGH/CRITICAL severity
+        if: env.BLOCK_ON_HIGH_SEVERITY == 'true' && steps.semgrep.outputs.has_high_severity == 'true'
         run: |
-          echo "Security issues found. Blocking this PR."
-          echo "Found ${{ steps.semgrep.outputs.total }} issue(s):"
-          echo "  - High: ${{ steps.semgrep.outputs.error }}"
-          echo "  - Medium: ${{ steps.semgrep.outputs.warning }}"
-          echo "  - Low: ${{ steps.semgrep.outputs.note }}"
+          echo "HIGH/CRITICAL severity vulnerabilities found. Blocking this PR."
+          echo ""
+          echo "Summary:"
+          echo "  - Critical: ${{ steps.semgrep.outputs.critical }}"
+          echo "  - High: ${{ steps.semgrep.outputs.high }}"
+          echo "  - Medium: ${{ steps.semgrep.outputs.medium }}"
+          echo "  - Low: ${{ steps.semgrep.outputs.low }}"
+          echo ""
+          echo "Please fix the HIGH/CRITICAL issues before merging."
           exit 1

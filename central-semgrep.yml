@@ -1,0 +1,173 @@
+name: Semgrep Security Scan (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      block_on_findings:
+        description: 'Block PR if vulnerabilities found'
+        required: false
+        type: boolean
+        default: false
+      extra_configs:
+        description: 'Additional Semgrep configs (space-separated)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  semgrep:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
+
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    container:
+      image: semgrep/semgrep:1.144.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Semgrep scan
+        id: semgrep
+        run: |
+          set +e
+          semgrep scan \
+            --config p/default \
+            --config p/security-audit \
+            --config p/trailofbits \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            ${{ inputs.extra_configs }} \
+            --sarif \
+            --output semgrep-results.sarif \
+            .
+
+          if [ -f semgrep-results.sarif ]; then
+            TOTAL=$(jq '[.runs[].results[]] | length' semgrep-results.sarif)
+            ERROR=$(jq '[.runs[].results[] | select(.level == "error")] | length' semgrep-results.sarif)
+            WARNING=$(jq '[.runs[].results[] | select(.level == "warning")] | length' semgrep-results.sarif)
+            NOTE=$(jq '[.runs[].results[] | select(.level == "note")] | length' semgrep-results.sarif)
+
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+            echo "error=$ERROR" >> $GITHUB_OUTPUT
+            echo "warning=$WARNING" >> $GITHUB_OUTPUT
+            echo "note=$NOTE" >> $GITHUB_OUTPUT
+            echo "has_findings=$( [ "$TOTAL" -gt 0 ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          else
+            echo "has_findings=false" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Generate findings report
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        run: |
+          TOTAL=${{ steps.semgrep.outputs.total }}
+          ERROR=${{ steps.semgrep.outputs.error }}
+          WARNING=${{ steps.semgrep.outputs.warning }}
+          NOTE=${{ steps.semgrep.outputs.note }}
+
+          cat > report.md << 'HEADER'
+          ## Security Scan Results
+
+          HEADER
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Looks good! No security issues were found in this change." >> report.md
+          else
+            cat >> report.md << EOF
+          Found **$TOTAL** potential security issue(s) that need attention.
+
+          | Severity | Count |
+          |----------|-------|
+          | High | $ERROR |
+          | Medium | $WARNING |
+          | Low | $NOTE |
+
+          ---
+
+          ### Issues Found
+
+          EOF
+
+            jq -r '.runs[].results[] | "**\(.ruleId)**\n- Severity: \(.level)\n- Location: \`\(.locations[0].physicalLocation.artifactLocation.uri)\` (line \(.locations[0].physicalLocation.region.startLine))\n- \(.message.text)\n"' semgrep-results.sarif >> report.md 2>/dev/null || true
+
+            cat >> report.md << 'FOOTER'
+
+          ---
+
+          ### What to do next
+
+          1. Review each issue listed above
+          2. Fix the code if it's a genuine vulnerability
+          3. If it's a false positive, add `# nosemgrep: <rule-id>` above the line
+
+          Check the **Security** tab for full details.
+          FOOTER
+          fi
+
+          cat report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('report.md') != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Security Scan Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+            }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        with:
+          name: semgrep-results-${{ github.run_number }}
+          path: |
+            semgrep-results.sarif
+            report.md
+          retention-days: 90
+
+      - name: Block if findings
+        if: inputs.block_on_findings && steps.semgrep.outputs.has_findings == 'true'
+        run: |
+          echo "Security issues found. Blocking PR."
+          exit 1
