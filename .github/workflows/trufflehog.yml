@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   trufflehog:
-    uses: apcode-1/test-semgrep/.github/workflows/central-trufflehog.yml@main
+    uses: apcode-1/central-repo/.github/workflows/central-trufflehog.yml@main
     with:
       block_on_secrets: false  # Monitor mode
     secrets:
