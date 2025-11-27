@@ -1,0 +1,208 @@
+name: Central TruffleHog Scan
+
+on:
+  workflow_call:
+    inputs:
+      block_on_secrets:
+        description: 'Block PR when verified secrets are found'
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: 'Slack webhook for notifications'
+        required: false
+
+jobs:
+  trufflehog:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog
+        id: trufflehog
+        run: |
+          set +e
+
+          # Determine scan range based on event type
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            SINCE_COMMIT="${{ github.event.pull_request.base.sha }}"
+            BRANCH="${{ github.event.pull_request.head.sha }}"
+          else
+            # For push events, scan last commit
+            SINCE_COMMIT="${{ github.event.before }}"
+            BRANCH="${{ github.sha }}"
+          fi
+
+          # Run TruffleHog
+          docker run --rm -v "$PWD:/tmp" -w /tmp \
+            ghcr.io/trufflesecurity/trufflehog:latest \
+            git file:///tmp/ \
+            --since-commit=$SINCE_COMMIT \
+            --branch=$BRANCH \
+            --only-verified --json \
+            --no-update --github-actions > results.json 2>&1 || true
+
+          # Process results
+          if [ -f "results.json" ] && [ -s "results.json" ]; then
+            # Convert newline-separated JSON to array if needed
+            if ! jq -e 'type == "array"' results.json >/dev/null 2>&1; then
+              jq -s '.' results.json > temp.json && mv temp.json results.json 2>/dev/null || echo "[]" > results.json
+            fi
+          else
+            echo "[]" > results.json
+          fi
+
+          # Count findings
+          FINDINGS=$(jq '. | length' results.json 2>/dev/null || echo "0")
+          VERIFIED=$(jq '[.[] | select(.Verified == true)] | length' results.json 2>/dev/null || echo "0")
+
+          echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+          echo "verified=$VERIFIED" >> $GITHUB_OUTPUT
+
+          if [ "$VERIFIED" -gt 0 ]; then
+            echo "has_secrets=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_secrets=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Found $FINDINGS potential secrets ($VERIFIED verified)"
+
+      - name: Generate report
+        if: always()
+        run: |
+          FINDINGS=${{ steps.trufflehog.outputs.findings }}
+          VERIFIED=${{ steps.trufflehog.outputs.verified }}
+
+          echo "## Secret Scan Results" > report.md
+          echo "" >> report.md
+
+          if [ "$FINDINGS" -eq 0 ]; then
+            echo "All good! No secrets were detected in this change." >> report.md
+          else
+            echo "Found **$FINDINGS** potential secret(s) ($VERIFIED verified)." >> report.md
+            echo "" >> report.md
+
+            if [ "$VERIFIED" -gt 0 ]; then
+              echo "### Verified Secrets" >> report.md
+              echo "" >> report.md
+              jq -r '.[] | select(.Verified == true) | "- **\(.DetectorName)** in `\(.SourceMetadata.Data.Git.file // "unknown"):\(.SourceMetadata.Data.Git.line // "?")`"' results.json >> report.md 2>/dev/null || true
+              echo "" >> report.md
+            fi
+
+            echo "---" >> report.md
+            echo "" >> report.md
+            echo "### What to do next" >> report.md
+            echo "" >> report.md
+            echo "1. **Rotate the secret immediately** - assume it's compromised" >> report.md
+            echo "2. Remove the secret from code" >> report.md
+            echo "3. Use environment variables or a secrets manager" >> report.md
+            echo "4. Check git history - secret may still exist in old commits" >> report.md
+
+            if [ "${{ inputs.block_on_secrets }}" == "true" ] && [ "$VERIFIED" -gt 0 ]; then
+              echo "" >> report.md
+              echo "---" >> report.md
+              echo "" >> report.md
+              echo "> **This PR is blocked due to verified secrets. Please remove them before merging.**" >> report.md
+            fi
+          fi
+
+          cat report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request' && steps.trufflehog.outputs.has_secrets == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('report.md', 'utf8');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Secret Scan Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+            }
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trufflehog-results-${{ github.run_number }}
+          path: |
+            results.json
+            report.md
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Send Slack notification
+        if: always() && steps.trufflehog.outputs.has_secrets == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "Slack webhook not configured, skipping notification"
+            exit 0
+          fi
+
+          FINDINGS=${{ steps.trufflehog.outputs.findings }}
+          VERIFIED=${{ steps.trufflehog.outputs.verified }}
+          REPO="${{ github.repository }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{
+              \"attachments\": [{
+                \"color\": \"#ff0000\",
+                \"title\": \"Secret Detected in $REPO\",
+                \"title_link\": \"$RUN_URL\",
+                \"text\": \"Found $VERIFIED verified secret(s)\",
+                \"fields\": [
+                  {\"title\": \"Repository\", \"value\": \"$REPO\", \"short\": true},
+                  {\"title\": \"Triggered by\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ],
+                \"footer\": \"TruffleHog Security Scan\"
+              }]
+            }" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: Block on verified secrets (if enabled)
+        if: inputs.block_on_secrets == true && steps.trufflehog.outputs.has_secrets == 'true'
+        run: |
+          echo "Verified secrets found in this PR!"
+          echo ""
+          echo "Findings: ${{ steps.trufflehog.outputs.findings }}"
+          echo "Verified: ${{ steps.trufflehog.outputs.verified }}"
+          echo ""
+          echo "Please remove all secrets before merging."
+          exit 1
